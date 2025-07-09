@@ -1,33 +1,36 @@
-import { StyleSheet, Text, View } from "react-native";
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, Button } from 'react-native';
+import { useRouter } from 'expo-router';
+import ImageSplash from '../app/components/ImageSplash';
 
-export default function Page() {
+export default function HomeScreen() {
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+  const timeoutRef = useRef(null);
+
+  const handleNavigate = () => {
+    setLoading(true);
+    timeoutRef.current = setTimeout(() => {
+      router.push('/first');
+    }, 2000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  if (loading) {
+    return <ImageSplash />;
+  }
+
   return (
-    <View style={styles.container}>
-      <View style={styles.main}>
-        <Text style={styles.title}>동미대 테스트</Text>
-      </View>
+    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+      <Text>홈 화면</Text>
+      <Button title="이동" onPress={handleNavigate} />
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: "center",
-    padding: 24,
-  },
-  main: {
-    flex: 1,
-    justifyContent: "center",
-    maxWidth: 960,
-    marginHorizontal: "auto",
-  },
-  title: {
-    fontSize: 64,
-    fontWeight: "bold",
-  },
-  subtitle: {
-    fontSize: 36,
-    color: "#38434D",
-  },
-});
