@@ -4,6 +4,7 @@ import {
   Text,
   ScrollView,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   TextInput,
   StyleSheet,
   SafeAreaView,
@@ -16,12 +17,18 @@ import {
   Platform,
   Keyboard,
   RefreshControl,
+  Alert,
+  FlatList,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import axios from 'axios';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import Ionicons from 'react-native-vector-icons/Ionicons';
+import { Swipeable } from 'react-native-gesture-handler';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import SyntaxHighlighter from 'react-native-syntax-highlighter';
+import { atomOneDark } from 'react-syntax-highlighter/styles/hljs';
 
 const StudyApp = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -32,7 +39,7 @@ const StudyApp = () => {
   const [showPicker, setShowPicker] = useState(false);
   const [userInfo, setUserInfo] = useState(null);
   const [participantCounts, setParticipantCounts] = useState({});
-  const [activeScreen, setActiveScreen] = useState('list'); // 'list' or 'chat'
+  const [activeScreen, setActiveScreen] = useState('list'); // 'list', 'chat', 'community'
   const [activeChat, setActiveChat] = useState({ chatRoomId: null, studyName: '' });
   // 자동 로그인/자동 userId:1 fetch 관련 코드 제거
   // 앱 시작 시 무조건 로그인 화면이 뜨도록 함
@@ -46,6 +53,7 @@ const StudyApp = () => {
   const [studyList, setStudyList] = useState([]);
   const [filteredStudyData, setFilteredStudyData] = useState([]);
   const [categoryList, setCategoryList] = useState([]);
+  const [meetingList, setMeetingList] = useState([]); // 실제 DB 일정 리스트
 
   // 스터디 생성 폼 상태를 useRef로 변경
   // studyFormRef의 category는 id로 저장하도록 변경
@@ -57,7 +65,7 @@ const StudyApp = () => {
     description: '',
   });
 
-  // 검색 관련 상태를 ref로 변경
+  // 검색 관련 상태를 ref로 변경 (type 고정)
   const searchRef = useRef({
     type: 'title',
     text: ''
@@ -69,14 +77,30 @@ const StudyApp = () => {
   const fetchStudyList = async () => {
     try {
       const res = await axios.get(`${BASE_URL}/api/study`);
-      const data = Array.isArray(res.data) ? res.data : [];
+      let data = Array.isArray(res.data) ? res.data : [];
+      // 각 방의 마지막 메시지 fetch
+      data = await Promise.all(
+        data.map(async (room) => {
+          if (!room.chatId) return room;
+          try {
+            const msgRes = await axios.get(`${BASE_URL}/api/chat/rooms/${room.chatId}/all`);
+            const msgs = Array.isArray(msgRes.data) ? msgRes.data : [];
+            return { ...room, lastMsg: msgs.length > 0 ? msgs[msgs.length - 1] : null };
+          } catch {
+            return { ...room, lastMsg: null };
+          }
+        })
+      );
       setStudyList(data);
       setFilteredStudyData(data);
       fetchAllParticipantCounts(data); // 참여자 수 동기화
+      // 일정 fetch
+      fetchAllMeetings(data);
     } catch (err) {
       setStudyList([]);
       setFilteredStudyData([]);
       setParticipantCounts({});
+      setMeetingList([]);
     }
   };
   const fetchCategoryList = async () => {
@@ -102,6 +126,23 @@ const StudyApp = () => {
       })
     );
     setParticipantCounts(counts);
+  };
+
+  // 일정 fetch 함수
+  const fetchAllMeetings = async (studyRooms) => {
+    // studyRooms: 참여중인 방 목록
+    const meetings = [];
+    await Promise.all(
+      (studyRooms || []).map(async (room) => {
+        try {
+          const res = await axios.get(`${BASE_URL}/api/study/rooms/${room.id}/meeting`);
+          if (res.data && res.data.id) {
+            meetings.push({ ...res.data, studyRoomName: room.name });
+          }
+        } catch {}
+      })
+    );
+    setMeetingList(meetings);
   };
 
   // 3. 앱 시작 시 목록/카테고리 fetch
@@ -184,33 +225,38 @@ const StudyApp = () => {
             </TouchableOpacity>
           </View>
           <ScrollView style={styles.scheduleList}>
-            {scheduleData.map((schedule) => (
-              <View key={schedule.id} style={styles.scheduleItem}>
-                <View style={styles.scheduleItemHeader}>
-                  <View style={styles.dateBadge}>
-                    <Text style={styles.scheduleDate}>{schedule.date}</Text>
+            {meetingList.length === 0 ? (
+              <View style={{ alignItems: 'center', marginTop: 40 }}>
+                <Text style={{ color: '#888', fontSize: 16 }}>예정된 일정이 없습니다.</Text>
+              </View>
+            ) : (
+              meetingList.map((meeting) => (
+                <View key={meeting.id} style={styles.scheduleItem}>
+                  <View style={styles.scheduleItemHeader}>
+                    <View style={styles.dateBadge}>
+                      <Text style={styles.scheduleDate}>{meeting.studyRoomName || ''}</Text>
+                    </View>
                   </View>
-                </View>
-                <View style={styles.scheduleItemContent}>
-                  <View style={styles.scheduleTimeContainer}>
-                    <Text style={styles.scheduleTime}>{schedule.time}</Text>
-                    <View style={styles.scheduleTimeLine} />
-                  </View>
-                  <View style={styles.scheduleMainContent}>
-                    <View style={styles.scheduleInfo}>
-                      <Text style={styles.scheduleItemTitle}>{schedule.title}</Text>
-                      <View style={styles.scheduleMetaInfo}>
-                        <View style={styles.scheduleStatusBadge}>
-                          <Text style={styles.scheduleStatusText}>진행 예정</Text>
+                  <View style={styles.scheduleItemContent}>
+                    <View style={styles.scheduleTimeContainer}>
+                      <Text style={styles.scheduleTime}>{meeting.meetingTime ? meeting.meetingTime.slice(11, 16) : ''}</Text>
+                      <View style={styles.scheduleTimeLine} />
+                    </View>
+                    <View style={styles.scheduleMainContent}>
+                      <View style={styles.scheduleInfo}>
+                        <Text style={styles.scheduleItemTitle}>{meeting.title}</Text>
+                        <View style={styles.scheduleMetaInfo}>
+                          <View style={styles.scheduleStatusBadge}>
+                            <Text style={styles.scheduleStatusText}>진행 예정</Text>
+                          </View>
+                          <Text style={styles.scheduleDuration}>{meeting.duration ? `${meeting.duration}분` : ''}</Text>
                         </View>
-                        <Text style={styles.scheduleDuration}>1시간 30분</Text>
                       </View>
                     </View>
-  
                   </View>
                 </View>
-              </View>
-            ))}
+              ))
+            )}
           </ScrollView>
         </View>
       </View>
@@ -219,15 +265,181 @@ const StudyApp = () => {
 
   // 출석체크, 방 참여, 방 퇴장 핸들러 제거
 
+  // 출석 잔디(Grass) 컴포넌트
+  const AttendanceGrass = ({ lastAttendanceDate, consecutiveAttendance }) => {
+    const [selected, setSelected] = React.useState(null); // {row, col, date}
+    const scaleAnim = React.useRef(new Animated.Value(1)).current;
+    const translateYAnim = React.useRef(new Animated.Value(0)).current;
+    // 49일(7주) 기준, 오늘을 기준으로 연속 출석일만큼 잔디 표시
+    const attendanceArray = Array(49).fill(false);
+    const dateArray = Array(49).fill(null); // 각 칸의 날짜 저장
+    if (lastAttendanceDate && consecutiveAttendance) {
+      let lastDate = new Date(lastAttendanceDate);
+      const today = new Date();
+      let offset = 0;
+      if (
+        lastDate.getFullYear() === today.getFullYear() &&
+        lastDate.getMonth() === today.getMonth() &&
+        lastDate.getDate() === today.getDate()
+      ) {
+        offset = 0;
+      } else {
+        offset = 1;
+      }
+      for (let i = 0; i < Math.min(consecutiveAttendance, 49 - offset); i++) {
+        const idx = 48 - i - offset;
+        if (idx >= 0) {
+          attendanceArray[idx] = true;
+          // 날짜 계산: 마지막 출석일에서 -i만큼
+          const d = new Date(lastDate);
+          d.setDate(lastDate.getDate() - (consecutiveAttendance - 1 - i));
+          dateArray[idx] = new Date(d);
+        }
+      }
+      if (offset === 0) {
+        attendanceArray[48] = true;
+        dateArray[48] = new Date(lastDate);
+      }
+    }
+    // 7x7 그리드로 렌더링 (크기 40x40, borderRadius 12)
+    const handleGrassPress = (row, col, dateObj) => {
+      setSelected({ row, col, date: dateObj });
+      scaleAnim.setValue(0.7);
+      translateYAnim.setValue(10);
+      Animated.parallel([
+        Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true }),
+        Animated.spring(translateYAnim, { toValue: 0, useNativeDriver: true }),
+      ]).start();
+    };
+
+    return (
+      <TouchableWithoutFeedback onPress={() => setSelected(null)}>
+        <View style={{ alignItems: 'center', marginVertical: 24 }}>
+          <Text style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 10 }}>최근 7주 출석 현황</Text>
+          <View style={{ flexDirection: 'row', position: 'relative', minHeight: 320 }}>
+            {[...Array(7)].map((_, col) => (
+              <View key={col} style={{ flexDirection: 'column', marginHorizontal: 2 }}>
+                {[...Array(7)].map((_, row) => {
+                  const idx = col * 7 + row;
+                  const isAttended = attendanceArray[idx];
+                  const dateObj = dateArray[idx];
+                  const isSelected = selected && selected.row === row && selected.col === col;
+                  if (isAttended) {
+                    return (
+                      <View key={row} style={{ alignItems: 'center', justifyContent: 'flex-end' }}>
+                        {/* 말풍선 */}
+                        {isSelected && dateObj && (
+                          <View style={{
+                            position: 'absolute',
+                            bottom: 48,
+                            left: '50%',
+                            transform: [{ translateX: -60 }],
+                            minWidth: 80,
+                            paddingVertical: 4,
+                            paddingHorizontal: 8,
+                            backgroundColor: '#fff',
+                            borderRadius: 8,
+                            borderWidth: 1,
+                            borderColor: '#D0D0D0',
+                            shadowColor: '#000',
+                            shadowOpacity: 0.08,
+                            shadowRadius: 4,
+                            shadowOffset: { width: 0, height: 2 },
+                            elevation: 2,
+                            alignItems: 'center',
+                            zIndex: 10,
+                          }}>
+                            <Text style={{ fontSize: 11, color: '#333' }}>
+                              {`${dateObj.getFullYear()}년 ${dateObj.getMonth() + 1}월 ${dateObj.getDate()}일 `}
+                              {dateObj.getHours().toString().padStart(2, '0')}
+                              :{dateObj.getMinutes().toString().padStart(2, '0')}
+                            </Text>
+                          </View>
+                        )}
+                        <TouchableOpacity
+                          activeOpacity={0.7}
+                          onPress={e => {
+                            e.stopPropagation();
+                            handleGrassPress(row, col, dateObj);
+                          }}
+                          style={{ alignItems: 'center', justifyContent: 'center' }}
+                        >
+                          {isSelected ? (
+                            <Animated.View
+                              style={{
+                                width: 40,
+                                height: 40,
+                                margin: 2,
+                                borderRadius: 12,
+                                backgroundColor: '#A8E6A3',
+                                borderWidth: 1,
+                                borderColor: '#D0D0D0',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                transform: [
+                                  { scale: scaleAnim },
+                                  { translateY: translateYAnim },
+                                ],
+                              }}
+                            />
+                          ) : (
+                            <View
+                              style={{
+                                width: 40,
+                                height: 40,
+                                margin: 2,
+                                borderRadius: 12,
+                                backgroundColor: '#A8E6A3',
+                                borderWidth: 1,
+                                borderColor: '#D0D0D0',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                              }}
+                            />
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  } else {
+                    return (
+                      <View
+                        key={row}
+                        style={{
+                          width: 40,
+                          height: 40,
+                          margin: 2,
+                          borderRadius: 12,
+                          backgroundColor: '#E0E0E0',
+                          borderWidth: 1,
+                          borderColor: '#D0D0D0',
+                        }}
+                      />
+                    );
+                  }
+                })}
+              </View>
+            ))}
+          </View>
+          <Text style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+            오늘 기준, 최근 49일간의 출석을 표시합니다.
+          </Text>
+        </View>
+      </TouchableWithoutFeedback>
+    );
+  };
+
   const DashboardScreen = () => {
     const today = new Date();
     const days = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
     const formattedDate = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
     const dayOfWeek = days[today.getDay()];
 
+    // 가장 가까운 일정 1개만 표시 (없으면 메시지)
+    const nextMeeting = meetingList.length > 0 ? meetingList[0] : null;
+
     return (
       <View style={styles.dashboardContainer}>
-        <ScrollView style={styles.scrollContainer}>
+        <View style={styles.scrollContainer}>
           <View style={styles.header}>
             <Text style={styles.date}>{formattedDate}</Text>
             <Text style={styles.subtitle}>{dayOfWeek}</Text>
@@ -242,7 +454,7 @@ const StudyApp = () => {
             </View>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>스터디 일정</Text>
-              <Text style={styles.statValue}>2개</Text>
+              <Text style={styles.statValue}>{meetingList.length}개</Text>
             </View>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>참여중인 방</Text>
@@ -251,31 +463,30 @@ const StudyApp = () => {
               </Text>
             </View>
           </View>
-          {/* 출석/방참여/퇴장 버튼 제거됨 */}
-
-          <View style={styles.illustrationContainer}>
-            <Image 
-              source={getAttendanceImage(userInfo ? userInfo.consecutiveAttendance : 0)} 
-              style={styles.illustrationImage} 
-            />
-          </View>
-        </ScrollView>
-
-        <View style={styles.bottomContent}>
-          <View style={styles.welcomeCard}>
-            <Text style={styles.welcomeTitle}>스터디 일정이 있습니다!</Text>
-            <TouchableOpacity onPress={() => setShowScheduleModal(true)}>
-              <Text style={styles.welcomeSubtitle}>일정 모아보기</Text>
-            </TouchableOpacity>
-            <View style={styles.divider} />
-            <View style={styles.scheduleRow}>
-              <Text style={styles.scheduleText}>김영한의 스프링 스터디</Text>
-              <Text style={styles.scheduleText1}>18:00</Text>
+          {/* 출석 잔디 UI */}
+          <AttendanceGrass lastAttendanceDate={userInfo?.lastAttendanceDate} consecutiveAttendance={userInfo?.consecutiveAttendance} />
+          {/* 일정 카드 (스크롤 없이 항상 보이게) */}
+          <View style={styles.bottomContent}>
+            <View style={styles.welcomeCard}>
+              {nextMeeting ? (
+                <>
+                  <Text style={styles.welcomeTitle}>{nextMeeting.title}</Text>
+                  <TouchableOpacity onPress={() => setShowScheduleModal(true)}>
+                    <Text style={styles.welcomeSubtitle}>일정 모아보기</Text>
+                  </TouchableOpacity>
+                  <View style={styles.divider} />
+                  <View style={styles.scheduleRow}>
+                    <Text style={styles.scheduleText}>{nextMeeting.studyRoomName || ''}</Text>
+                    <Text style={styles.scheduleText1}>{nextMeeting.meetingTime ? nextMeeting.meetingTime.slice(11, 16) : ''}</Text>
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.welcomeTitle}>예정된 일정이 없습니다.</Text>
+              )}
             </View>
           </View>
+          <ScheduleModal />
         </View>
-
-        <ScheduleModal />
       </View>
     );
   };
@@ -387,33 +598,6 @@ const StudyApp = () => {
             </View>
 
             <View style={styles.searchContainer}>
-              <View style={styles.searchTypeContainer}>
-                <TouchableOpacity 
-                  style={[
-                    styles.searchTypeButton, 
-                    localSearch.type === 'title' && styles.searchTypeActive
-                  ]}
-                  onPress={() => setLocalSearch({...localSearch, type: 'title'})}
-                >
-                  <Text style={[
-                    styles.searchTypeText,
-                    localSearch.type === 'title' && styles.searchTypeTextActive
-                  ]}>방 제목</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[
-                    styles.searchTypeButton, 
-                    localSearch.type === 'admin' && styles.searchTypeActive
-                  ]}
-                  onPress={() => setLocalSearch({...localSearch, type: 'admin'})}
-                >
-                  <Text style={[
-                    styles.searchTypeText,
-                    localSearch.type === 'admin' && styles.searchTypeTextActive
-                  ]}>방장 이름</Text>
-                </TouchableOpacity>
-              </View>
-
               <View style={styles.searchInputContainer}>
                 <TextInput
                   style={styles.searchInput}
@@ -537,10 +721,10 @@ const StudyApp = () => {
 
               <ScrollView style={styles.createFormContainer}>
                 <View style={styles.formGroup}>
-                  <Text style={styles.createFormLabel}>대표 이미지 (필수)</Text>
-                  <TouchableOpacity onPress={pickImage} style={{ ...styles.createFormInput, alignItems: 'center', justifyContent: 'center', height: 120 }}>
+                  {/* <Text style={styles.createFormLabel}>대표 이미지 (필수)</Text> */}
+                  <TouchableOpacity onPress={pickImage} style={{ ...styles.createFormInput, alignItems: 'center', justifyContent: 'center', height: 140, width: 140, alignSelf: 'center' }}>
                     {localForm.imageUrl ? (
-                      <Image source={{ uri: localForm.imageUrl }} style={{ width: 100, height: 100, borderRadius: 10 }} />
+                      <Image source={{ uri: localForm.imageUrl }} style={{ width: 140, height: 140, borderRadius: 16 }} />
                     ) : (
                       <Text style={{ color: '#888' }}>이미지 선택</Text>
                     )}
@@ -548,10 +732,9 @@ const StudyApp = () => {
                   {uploading && <Text style={{ color: '#4CAF50', marginTop: 4 }}>업로드 중...</Text>}
                 </View>
                 <View style={styles.formGroup}>
-                  <Text style={styles.createFormLabel}>스터디명</Text>
                   <TextInput
                     style={styles.createFormInput}
-                    placeholder="스터디 이름을 입력하세요"
+                    placeholder="스터디 이름 (필수)"
                     value={localForm.name}
                     onChangeText={(text) => setLocalForm({...localForm, name: text})}
                     placeholderTextColor="#999"
@@ -561,7 +744,7 @@ const StudyApp = () => {
                   <Text style={styles.createFormLabel}>방 소개</Text>
                   <TextInput
                     style={[styles.createFormInput, styles.createTextArea]}
-                    placeholder="방 소개를 입력하세요"
+                    placeholder="방 소개를 입력하세요 (필수)"
                     value={localForm.description}
                     onChangeText={(text) => setLocalForm({...localForm, description: text})}
                     multiline
@@ -635,48 +818,26 @@ const StudyApp = () => {
 
               {/* 카테고리 선택 모달 */}
               <Modal
-                transparent={true}
                 visible={showCategoryPicker}
-                animationType="slide"
+                transparent
+                animationType="fade"
                 onRequestClose={() => setShowCategoryPicker(false)}
               >
-                <TouchableOpacity
-                  style={styles.categoryModalOverlay}
-                  activeOpacity={1}
-                  onPress={() => setShowCategoryPicker(false)}
-                >
-                  <View style={styles.categoryModalContent}>
-                    <View style={styles.categoryModalHeader}>
-                      <Text style={styles.categoryModalTitle}>카테고리 선택</Text>
+                <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', alignItems: 'center' }} activeOpacity={1} onPress={() => setShowCategoryPicker(false)}>
+                  <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 20, minWidth: 220 }}>
+                    <Text style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 12 }}>카테고리 선택</Text>
+                    {categoryList.map(cat => (
                       <TouchableOpacity
-                        style={styles.categoryCloseButton}
-                        onPress={() => setShowCategoryPicker(false)}
+                        key={cat.id}
+                        style={{ paddingVertical: 10, paddingHorizontal: 4 }}
+                        onPress={() => {
+                          setLocalForm(f => ({ ...f, category: cat.id }));
+                          setShowCategoryPicker(false);
+                        }}
                       >
-                        <Text style={styles.categoryCloseButtonText}>✕</Text>
+                        <Text style={{ fontSize: 15, color: localForm.category === cat.id ? '#222' : '#666', fontWeight: localForm.category === cat.id ? 'bold' : 'normal' }}>{cat.name}</Text>
                       </TouchableOpacity>
-                    </View>
-                    <ScrollView style={styles.categoryList}>
-                      {categoryList.map((category) => (
-                        <TouchableOpacity
-                          key={category.id}
-                          style={[
-                            styles.categoryItem,
-                            localForm.category === category.id && styles.categoryItemSelected
-                          ]}
-                          onPress={() => {
-                            setLocalForm({...localForm, category: category.id});
-                            setShowCategoryPicker(false);
-                          }}
-                        >
-                          <Text style={[
-                            styles.categoryItemText,
-                            localForm.category === category.id && styles.categoryItemTextSelected
-                          ]}>
-                            {category.name}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
+                    ))}
                   </View>
                 </TouchableOpacity>
               </Modal>
@@ -825,7 +986,7 @@ const StudyApp = () => {
       >
         <View style={{ flex: 1 }}>
           {/* 상단 헤더 */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#fff', borderBottomWidth: 1, borderColor: '#eee' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#fff' }}>
             <TouchableOpacity
               onPress={onBack}
               style={{
@@ -1066,6 +1227,12 @@ const StudyApp = () => {
       try {
         const res = await axios.post(`${BASE_URL}/api/user/login`, { email, password });
         setUserInfo(res.data);
+        // 로그인 성공 시 출석 체크
+        try {
+          await axios.post(`${BASE_URL}/api/user/${res.data.id}/attendance`);
+        } catch (attErr) {
+          // 출석 체크 실패 시 무시 (네트워크 문제 등)
+        }
       } catch (err) {
         setError('로그인 실패: 이메일 또는 비밀번호를 확인하세요');
       }
@@ -1120,167 +1287,545 @@ const StudyApp = () => {
       setRefreshing(false);
     };
     return (
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={styles.pageTitle}>스터디방 목록</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <TouchableOpacity onPress={() => setShowSearchModal(true)} style={{ padding: 6 }}>
-                <Ionicons name="search" size={24} color="#222" />
-              </TouchableOpacity>
-            </View>
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16 }}>
+          <Text style={{ fontSize: 25, fontWeight: '600' }}>스터디룸</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity onPress={() => setShowSearchModal(true)} style={{ padding: 5 }}>
+              <Ionicons name="search" size={24} color="#222" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setActiveScreen('create')} style={{ padding: 5, marginLeft: 2, marginTop: -3 }}>
+              <Ionicons name="create-outline" size={28} color="#222" />
+            </TouchableOpacity>
           </View>
         </View>
-        <View style={{ height: 18 }} />
-        <View style={styles.studyListSection}>
-          <CategoryFilterBar
-            categoryList={categoryList}
-            selectedCategory={selectedCategory}
-            onSelectCategory={setSelectedCategory}
-          />
-          <ScrollView
-            style={styles.studyListContainer}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={async () => {
-                  setRefreshing(true);
-                  await fetchStudyList();
-                  setFilteredStudyData((data) => data); // 강제 리렌더
-                  setRefreshing(false);
-                }}
-                colors={["#4CAF50"]}
-              />
-            }
-          >
-            {(Array.isArray(filteredStudyData) ? filteredStudyData : [])
-              .filter(study => selectedCategory === 'all' || study.categoriesId === selectedCategory)
-              .map((study) => {
-              // created_at에서 년-월-일만 추출
-              let createdDate = '';
-              if (study?.created_at) {
-                const d = new Date(study.created_at);
-                createdDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-              }
-              const currentCount = (participantCounts && study?.id in participantCounts) ? participantCounts[study.id] : '-';
-              // 카테고리명 찾기
-              const categoryName = Array.isArray(categoryList)
-                ? (categoryList.find(cat => cat.id === study?.categoriesId)?.name || '')
-                : '';
-              return (
-                <TouchableOpacity
-                  key={study?.id ?? Math.random()}
-                  style={styles.studyListItem}
-                  onPress={() => {
-                    // 본인이 방장 or 이미 참여중인 방이면 바로 입장
-                    const isHost = userInfo && study?.studyRoomHostId === userInfo.id;
-                    const isParticipant = Array.isArray(study?.participants)
-                      ? study.participants.some(p => p.userId === userInfo?.id)
-                      : false;
-                    if (isHost || isParticipant) {
-                      setActiveScreen('chat');
-                      setActiveChat({ chatRoomId: study?.chatId, studyName: study?.name, imageUrl: study?.imageUrl });
-                    } else {
-                      setJoinModal({ visible: true, study, password: '' });
-                    }
+        <View style={styles.container}>
+          {/* 상단과 카테고리 버튼 사이 간격 완전히 제거 */}
+          <View style={{ height: 0 }} />
+          <View style={styles.studyListSection}>
+            <CategoryFilterBar
+              categoryList={categoryList}
+              selectedCategory={selectedCategory}
+              onSelectCategory={setSelectedCategory}
+            />
+            <ScrollView
+              style={styles.studyListContainer}
+              showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={async () => {
+                    setRefreshing(true);
+                    await fetchStudyList();
+                    setFilteredStudyData((data) => data); // 강제 리렌더
+                    setRefreshing(false);
                   }}
-                >
-                  <View style={[styles.studyItemContent, { marginTop: 8 }]}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                      {study?.imageUrl ? (
-                        <Image source={{ uri: study.imageUrl }} style={{ width: 48, height: 48, borderRadius: 8, marginRight: 12 }} />
-                      ) : (
-                        <View style={{ width: 48, height: 48, borderRadius: 8, marginRight: 12, backgroundColor: '#eee', alignItems: 'center', justifyContent: 'center' }}>
-                          <Text style={{ color: '#aaa', fontSize: 18 }}>📷</Text>
-                        </View>
-                      )}
-                      <View style={{ flex: 1 }}>
-                        {/* 카테고리 박스 */}
-                        <View style={styles.categoryBadge}>
-                          <Text style={styles.categoryBadgeText}>{categoryName}</Text>
-                        </View>
-                        <View style={styles.studyHeader}>
+                  colors={["#4CAF50"]}
+                />
+              }
+            >
+              {(() => {
+                const filtered = (Array.isArray(filteredStudyData) ? filteredStudyData : [])
+                  .filter(study => selectedCategory === 'all' || study.categoriesId === selectedCategory);
+                if (filtered.length === 0) {
+                  return (
+                    <View style={{ alignItems: 'center', marginTop: 40 }}>
+                      <Text style={{ color: '#888', fontSize: 16 }}>아직 스터디룸이 없습니다.</Text>
+                    </View>
+                  );
+                }
+                return filtered.map((study) => {
+                  // created_at에서 년-월-일만 추출
+                  let createdDate = '';
+                  if (study?.created_at) {
+                    const d = new Date(study.created_at);
+                    createdDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                  }
+                  const currentCount = (participantCounts && study?.id in participantCounts) ? participantCounts[study.id] : '-';
+                  // 카테고리명 찾기
+                  const categoryName = Array.isArray(categoryList)
+                    ? (categoryList.find(cat => cat.id === study?.categoriesId)?.name || '')
+                    : '';
+                  return (
+                    <TouchableOpacity
+                      key={study?.id ?? Math.random()}
+                      style={styles.studyListItem}
+                      onPress={() => {
+                        // 본인이 방장 or 이미 참여중인 방이면 바로 입장
+                        const isHost = userInfo && study?.studyRoomHostId === userInfo.id;
+                        const isParticipant = Array.isArray(study?.participants)
+                          ? study.participants.some(p => p.userId === userInfo?.id)
+                          : false;
+                        if (isHost || isParticipant) {
+                          setChatEntrySource('study');
+                          setActiveScreen('chat');
+                          setActiveChat({ chatRoomId: study?.chatId, studyName: study?.name, imageUrl: study?.imageUrl });
+                        } else {
+                          setJoinModal({ visible: true, study, password: '' });
+                        }
+                      }}
+                    >
+                      <View style={[styles.studyItemContent, { marginTop: 8 }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          {study?.imageUrl ? (
+                            <Image source={{ uri: study.imageUrl }} style={{ width: 48, height: 48, borderRadius: 8, marginRight: 12 }} />
+                          ) : (
+                            <View style={{ width: 48, height: 48, borderRadius: 8, marginRight: 12, backgroundColor: '#eee', alignItems: 'center', justifyContent: 'center' }}>
+                              <Text style={{ color: '#aaa', fontSize: 18 }}>📷</Text>
+                            </View>
+                          )}
                           <View style={{ flex: 1 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                              <Text style={styles.studyTitle}>
-                                {study?.name ?? '-'}
-                              </Text>
-                              {study?.password ? (
-                                <Ionicons name="lock-closed-outline" size={15} color="#888" style={{ marginLeft: 5, marginTop: 1 }} />
-                              ) : null}
+                            {/* 카테고리 박스 */}
+                            <View style={styles.categoryBadge}>
+                              <Text style={styles.categoryBadgeText}>{categoryName}</Text>
                             </View>
-                            {study?.description ? (
-                              <Text style={styles.studyDescription}>{study.description}</Text>
-                            ) : null}
-                          </View>
-                          <View style={{ alignItems: 'flex-end', minWidth: 60 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' }}>
-                              <Ionicons name="person-outline" size={15} color={styles.hostNameText.color} style={{ marginRight: 3 }} />
-                              <Text style={[styles.studyProgress, { color: styles.hostNameText.color }]}>{currentCount}/{study?.peopleCount ?? '-'}명</Text>
+                            <View style={styles.studyHeader}>
+                              <View style={{ flex: 1 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                  <Text style={styles.studyTitle}>
+                                    {study?.name ?? '-'}
+                                  </Text>
+                                  {study?.password ? (
+                                    <Ionicons name="lock-closed-outline" size={15} color="#888" style={{ marginLeft: 5, marginTop: 1 }} />
+                                  ) : null}
+                                </View>
+                                {study?.description ? (
+                                  <Text style={styles.studyDescription}>{study.description}</Text>
+                                ) : null}
+                              </View>
+                              <View style={{ alignItems: 'flex-end', minWidth: 60, marginTop: 4 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' }}>
+                                  <Ionicons name="person" size={15} color="#222" style={{ marginRight: 3 }} />
+                                  <Text style={[styles.studyProgress, { color: '#222' }]}>{currentCount}/{study?.peopleCount ?? '-'}명</Text>
+                                </View>
+                                <Text style={{ fontSize: 11, color: '#aaa', marginTop: 8 }}>
+                                  {study.lastMsg?.sentAt ? getTimeAgo(study.lastMsg.sentAt) : ''}
+                                </Text>
+                              </View>
                             </View>
-                            <Text style={styles.hostNameText}>방장: {study?.hostName ?? '-'}</Text>
+                            <View style={styles.studyInfo}>
+                              {/* 방장 이름은 위로 이동 */}
+                            </View>
                           </View>
-                        </View>
-                        <View style={styles.studyInfo}>
-                          {/* 방장 이름은 위로 이동 */}
                         </View>
                       </View>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+                    </TouchableOpacity>
+                  );
+                });
+              })()}
+            </ScrollView>
+          </View>
+          <SearchModal />
         </View>
-        <SearchModal />
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => setActiveScreen('create')}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="add" size={32} color="#fff" />
-        </TouchableOpacity>
-      </View>
+      </SafeAreaView>
     );
   };
 
   // MoreScreen 헤더에도 로그아웃 버튼 추가
   const MoreScreen = () => (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.pageTitle}>더보기</Text>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}>
+        <Text style={{ fontSize: 25, fontWeight: '600' }}>더보기</Text>
       </View>
+      <View style={styles.container}>
+        <View style={styles.moreSection}>
+          <TouchableOpacity style={styles.moreItem}>
+            <View style={styles.moreItemContent}>
+              <View style={styles.moreIconContainer}>
+                <Text style={styles.moreIcon}>🔗</Text>
+              </View>
+              <View style={styles.moreTextContainer}>
+                <Text style={styles.moreItemTitle}>다른 서비스로 이동하기</Text>
+                <Text style={styles.moreItemSubtitle}>연결된 다른 서비스를 이용해보세요</Text>
+              </View>
+            </View>
+            <Text style={styles.moreArrow}>›</Text>
+          </TouchableOpacity>
 
-      <View style={styles.moreSection}>
-        <TouchableOpacity style={styles.moreItem}>
-          <View style={styles.moreItemContent}>
-            <View style={styles.moreIconContainer}>
-              <Text style={styles.moreIcon}>🔗</Text>
+          <TouchableOpacity style={styles.moreItem}>
+            <View style={styles.moreItemContent}>
+              <View style={styles.moreIconContainer}>
+                <Text style={styles.moreIcon}>⚙️</Text>
+              </View>
+              <View style={styles.moreTextContainer}>
+                <Text style={styles.moreItemTitle}>설정</Text>
+                <Text style={styles.moreItemSubtitle}>앱 설정을 관리하세요</Text>
+              </View>
             </View>
-            <View style={styles.moreTextContainer}>
-              <Text style={styles.moreItemTitle}>다른 서비스로 이동하기</Text>
-              <Text style={styles.moreItemSubtitle}>연결된 다른 서비스를 이용해보세요</Text>
-            </View>
-          </View>
-          <Text style={styles.moreArrow}>›</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.moreItem}>
-          <View style={styles.moreItemContent}>
-            <View style={styles.moreIconContainer}>
-              <Text style={styles.moreIcon}>⚙️</Text>
-            </View>
-            <View style={styles.moreTextContainer}>
-              <Text style={styles.moreItemTitle}>설정</Text>
-              <Text style={styles.moreItemSubtitle}>앱 설정을 관리하세요</Text>
-            </View>
-          </View>
-          <Text style={styles.moreArrow}>›</Text>
-        </TouchableOpacity>
+            <Text style={styles.moreArrow}>›</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
+    </SafeAreaView>
   );
+
+  // 커뮤니티 화면
+  const CommunityScreen = () => {
+    const [showCreate, setShowCreate] = useState(false);
+    const [showCommunitySearch, setShowCommunitySearch] = useState(false);
+    const [newTitle, setNewTitle] = useState('');
+    const [newContent, setNewContent] = useState('');
+    const [commentInput, setCommentInput] = useState('');
+    const [markdownPreview, setMarkdownPreview] = useState('');
+    const [communityPosts, setCommunityPosts] = useState([]);
+    const [selectedPost, setSelectedPost] = useState(null);
+    const [communityLoading, setCommunityLoading] = useState(false);
+    const [communityError, setCommunityError] = useState('');
+    const [codeInput, setCodeInput] = useState('');
+
+    // 언어 감지 함수 (간단 버전)
+    const detectCodeLanguage = (content) => {
+      const match = content.match(/```(\w+)/);
+      return match ? match[1] : undefined;
+    };
+
+    // 커뮤니티 API 연동
+    const fetchCommunityPosts = async () => {
+      setCommunityLoading(true);
+      setCommunityError('');
+      try {
+        const res = await axios.get(`${BASE_URL}/api/community`);
+        setCommunityPosts(Array.isArray(res.data) ? res.data : []);
+      } catch (e) {
+        setCommunityError('게시글 목록을 불러오지 못했습니다.');
+      }
+      setCommunityLoading(false);
+    };
+    const fetchCommunityPost = async (id) => {
+      setCommunityLoading(true);
+      setCommunityError('');
+      try {
+        const res = await axios.get(`${BASE_URL}/api/community/${id}`);
+        setSelectedPost(res.data);
+      } catch (e) {
+        setCommunityError('게시글을 불러오지 못했습니다.');
+      }
+      setCommunityLoading(false);
+    };
+    const createCommunityPost = async (title, content) => {
+      setCommunityLoading(true);
+      setCommunityError('');
+      try {
+        const codeLanguage = detectCodeLanguage(content);
+        const res = await axios.post(`${BASE_URL}/api/community`, {
+          title, content, authorId: userInfo?.id, authorName: userInfo?.name, codeLanguage
+        });
+        await fetchCommunityPosts();
+        return res.data;
+      } catch (e) {
+        setCommunityError('게시글 작성에 실패했습니다.');
+      }
+      setCommunityLoading(false);
+    };
+    const deleteCommunityPost = async (id) => {
+      setCommunityLoading(true);
+      setCommunityError('');
+      try {
+        await axios.delete(`${BASE_URL}/api/community/${id}`);
+        await fetchCommunityPosts();
+        setSelectedPost(null);
+      } catch (e) {
+        setCommunityError('게시글 삭제에 실패했습니다.');
+      }
+      setCommunityLoading(false);
+    };
+    // 댓글
+    const [comments, setComments] = useState([]);
+    const [commentsLoading, setCommentsLoading] = useState(false);
+    const fetchComments = async (postId) => {
+      setCommentsLoading(true);
+      try {
+        const res = await axios.get(`${BASE_URL}/api/community/${postId}/comments`);
+        setComments(Array.isArray(res.data) ? res.data : []);
+      } catch {
+        setComments([]);
+      }
+      setCommentsLoading(false);
+    };
+    const createComment = async (postId, content) => {
+      setCommentsLoading(true);
+      try {
+        const codeLanguage = detectCodeLanguage(content);
+        await axios.post(`${BASE_URL}/api/community/${postId}/comments`, {
+          content, authorId: userInfo?.id, authorName: userInfo?.name, codeLanguage
+        });
+        await fetchComments(postId);
+        await fetchCommunityPosts(); // 댓글 수 갱신
+      } catch {}
+      setCommentsLoading(false);
+    };
+    const deleteComment = async (commentId, postId) => {
+      setCommentsLoading(true);
+      try {
+        await axios.delete(`${BASE_URL}/api/community/comments/${commentId}`);
+        await fetchComments(postId);
+      } catch {}
+      setCommentsLoading(false);
+    };
+
+    // 게시글 작성
+    const handleCreatePost = () => {
+      if (!newTitle.trim() || !newContent.trim()) {
+        Alert.alert('제목과 내용을 입력하세요');
+        return;
+      }
+      setCommunityPosts(prev => [
+        {
+          id: Date.now(),
+          title: newTitle,
+          content: newContent,
+          comments: [],
+          createdAt: new Date().toISOString(),
+          author: userInfo?.name || '익명',
+        },
+        ...prev
+      ]);
+      setNewTitle('');
+      setNewContent('');
+      setShowCreate(false);
+    };
+
+    // 댓글 작성
+    const handleAddComment = () => {
+      if (!commentInput.trim() || !selectedPost) return;
+      createComment(selectedPost.id, commentInput);
+      setCommentInput('');
+    };
+
+    // 마크다운 미리보기
+    const renderMarkdown = (md) => {
+      // 아주 간단한 마크다운 변환 (bold, code, pre)
+      let html = md
+        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\n/g, '<br/>');
+      return html;
+    };
+
+    // 게시글/댓글 렌더링 시 코드블록 하이라이트
+    const renderMarkdownWithHighlight = (md, codeLanguage) => {
+      // 코드블록(```lang ... ```)만 하이라이트, 나머지는 Text로
+      const regex = /```(\w+)?([\s\S]*?)```/g;
+      let lastIndex = 0;
+      let elements = [];
+      let match;
+      let idx = 0;
+      while ((match = regex.exec(md)) !== null) {
+        if (match.index > lastIndex) {
+          elements.push(<Text key={idx++}>{md.slice(lastIndex, match.index)}</Text>);
+        }
+        elements.push(
+          <SyntaxHighlighter
+            key={idx++}
+            language={match[1] || codeLanguage || 'text'}
+            style={atomOneDark}
+            highlighter="hljs"
+            customStyle={{ borderRadius: 8, marginVertical: 6 }}
+          >
+            {match[2]}
+          </SyntaxHighlighter>
+        );
+        lastIndex = regex.lastIndex;
+      }
+      if (lastIndex < md.length) {
+        elements.push(<Text key={idx++}>{md.slice(lastIndex)}</Text>);
+      }
+      return elements;
+    };
+
+    // 커뮤니티 검색 모달 (스터디룸 SearchModal 참고, 간단 버전)
+    const [communitySearch, setCommunitySearch] = useState('');
+    const handleCommunitySearch = () => {
+      if (!communitySearch.trim()) {
+        fetchCommunityPosts();
+        setShowCommunitySearch(false);
+        return;
+      }
+      const searchQuery = communitySearch.toLowerCase().trim();
+      setCommunityPosts(posts => posts.filter(post => post.title.toLowerCase().includes(searchQuery)));
+      setShowCommunitySearch(false);
+    };
+    const CommunitySearchModal = () => (
+      <Modal
+        visible={showCommunitySearch}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCommunitySearch(false)}
+      >
+        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', alignItems: 'center' }} activeOpacity={1} onPress={() => setShowCommunitySearch(false)}>
+          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 20, minWidth: 220 }}>
+            <Text style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 12 }}>게시글 검색</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: '#eee', borderRadius: 8, padding: 10, fontSize: 15, marginBottom: 12, minWidth: 180 }}
+              placeholder="제목으로 검색"
+              value={communitySearch}
+              onChangeText={setCommunitySearch}
+              onSubmitEditing={handleCommunitySearch}
+              returnKeyType="search"
+              autoFocus
+            />
+            <TouchableOpacity onPress={handleCommunitySearch} style={{ backgroundColor: '#4CAF50', borderRadius: 8, paddingVertical: 10, alignItems: 'center' }}>
+              <Text style={{ color: '#fff', fontWeight: 'bold' }}>검색</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+    );
+
+    useEffect(() => {
+      fetchCommunityPosts();
+    }, []);
+
+    useEffect(() => {
+      if (selectedPost?.id) fetchComments(selectedPost.id);
+    }, [selectedPost?.id]);
+
+    if (showCreate) {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}>
+            <TouchableOpacity onPress={() => setShowCreate(false)} style={{ padding: 6, marginRight: 8 }}>
+              <Ionicons name="arrow-back" size={28} color="#222" />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 18, fontWeight: 'bold' }}>게시글 작성</Text>
+          </View>
+          <ScrollView style={{ flex: 1, padding: 20 }}>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: '#eee', borderRadius: 8, padding: 12, fontSize: 16, marginBottom: 16 }}
+              placeholder="제목"
+              value={newTitle}
+              onChangeText={setNewTitle}
+            />
+            <TextInput
+              style={{ borderWidth: 1, borderColor: '#eee', borderRadius: 8, padding: 12, fontSize: 15, minHeight: 80, marginBottom: 16, textAlignVertical: 'top' }}
+              placeholder="내용을 입력하세요"
+              value={newContent}
+              onChangeText={setNewContent}
+              multiline
+            />
+            <TextInput
+              style={{ borderWidth: 1, borderColor: '#eee', borderRadius: 8, padding: 12, fontSize: 14, minHeight: 80, marginBottom: 16, fontFamily: 'Menlo', textAlignVertical: 'top', backgroundColor: '#fafafa' }}
+              placeholder="코드 입력(선택)"
+              value={codeInput}
+              onChangeText={setCodeInput}
+              multiline
+            />
+            <TouchableOpacity
+              style={{ backgroundColor: '#4CAF50', borderRadius: 8, paddingVertical: 14, alignItems: 'center', marginTop: 8 }}
+              onPress={async () => {
+                if (!newTitle.trim() || !newContent.trim()) {
+                  Alert.alert('제목과 내용을 입력하세요');
+                  return;
+                }
+                let content = newContent;
+                if (codeInput.trim()) {
+                  content += `\n\n\n${codeInput}\n\n\n`;
+                }
+                await createCommunityPost(newTitle, content);
+                setNewTitle('');
+                setNewContent('');
+                setCodeInput('');
+                setShowCreate(false);
+              }}
+            >
+              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>등록</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      );
+    }
+
+    if (selectedPost) {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}>
+            <TouchableOpacity onPress={() => setSelectedPost(null)} style={{ padding: 6, marginRight: 8 }}>
+              <Ionicons name="arrow-back" size={28} color="#222" />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 18, fontWeight: 'bold' }}>게시글</Text>
+          </View>
+          <ScrollView style={{ flex: 1, padding: 20 }}>
+            <Text style={{ fontSize: 20, fontWeight: 'bold', marginBottom: 8 }}>{selectedPost.title}</Text>
+            <Text style={{ color: '#888', fontSize: 13, marginBottom: 8 }}>{selectedPost.author} · {new Date(selectedPost.createdAt).toLocaleString()}</Text>
+            <View style={{ borderWidth: 1, borderColor: '#eee', borderRadius: 8, padding: 12, minHeight: 60, backgroundColor: '#fafafa', marginBottom: 20 }}>
+              {renderMarkdownWithHighlight(selectedPost.content, selectedPost.codeLanguage)}
+            </View>
+            <Text style={{ fontWeight: 'bold', marginBottom: 8 }}>댓글 (코드 리뷰)</Text>
+            {comments.length === 0 ? (
+              <Text style={{ color: '#888', marginBottom: 12 }}>아직 댓글이 없습니다.</Text>
+            ) : (
+              comments.map((c) => (
+                <View key={c.id} style={{ marginBottom: 14, padding: 10, backgroundColor: '#f5f5f5', borderRadius: 8 }}>
+                  <Text style={{ fontWeight: '500', marginBottom: 2 }}>{c.authorName || c.author} · {new Date(c.createdAt).toLocaleString()}</Text>
+                  {renderMarkdownWithHighlight(c.content, c.codeLanguage)}
+                </View>
+              ))
+            )}
+            <TextInput
+              style={{ borderWidth: 1, borderColor: '#eee', borderRadius: 8, padding: 10, fontSize: 15, minHeight: 40, marginTop: 10, marginBottom: 8, textAlignVertical: 'top' }}
+              placeholder="댓글을 입력하세요 (코드 리뷰, 마크다운 지원)"
+              value={commentInput}
+              onChangeText={setCommentInput}
+              multiline
+            />
+            <TouchableOpacity onPress={handleAddComment} style={{ backgroundColor: '#4CAF50', borderRadius: 8, padding: 10, alignItems: 'center' }}>
+              <Text style={{ color: '#fff', fontWeight: 'bold' }}>댓글 등록</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      );
+    }
+
+    // 커뮤니티 메인 화면 헤더 (스터디룸과 동일)
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16 }}>
+          <Text style={{ fontSize: 25, fontWeight: '600' }}>커뮤니티</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity onPress={() => setShowCommunitySearch(true)} style={{ padding: 5 }}>
+              <Ionicons name="search" size={24} color="#222" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowCreate(true)} style={{ padding: 5, marginLeft: 2, marginTop: -3 }}>
+              <Ionicons name="create-outline" size={28} color="#222" />
+            </TouchableOpacity>
+          </View>
+        </View>
+        <ScrollView style={{ flex: 1 }}>
+          {communityLoading ? (
+            <View style={{ alignItems: 'center', marginTop: 60 }}><Text>로딩 중...</Text></View>
+          ) : communityPosts.length === 0 ? (
+            <View style={{ alignItems: 'center', marginTop: 60 }}><Text style={{ color: '#888', fontSize: 16 }}>아직 게시글이 없습니다</Text></View>
+          ) : (
+            [...communityPosts].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map(post => (
+              <TouchableOpacity
+                key={post.id}
+                style={{ backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee', paddingHorizontal: 16, paddingVertical: 10 }}
+                onPress={async () => {
+                  await increasePostViews(post.id);
+                  fetchCommunityPosts();
+                  setSelectedPost(post);
+                }}
+              >
+                <Text
+                  style={{ fontSize: 17, fontWeight: 'normal', marginBottom: 6 }}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {post.title}
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                  <Text style={{ color: '#888', fontSize: 13, flexShrink: 1, minWidth: 0 }} numberOfLines={1} ellipsizeMode="tail">글쓴이: {post.authorName || post.author}</Text>
+                  <Text style={{ color: '#888', fontSize: 13, marginLeft: 12 }} numberOfLines={1} ellipsizeMode="tail">조회수: {typeof post.views === 'number' ? post.views : 0}</Text>
+                  <Text style={{ color: '#888', fontSize: 13, marginLeft: 12 }} numberOfLines={1} ellipsizeMode="tail">댓글: {typeof post.commentsCount === 'number' ? post.commentsCount : 0}</Text>
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
+        </ScrollView>
+        <CommunitySearchModal />
+      </SafeAreaView>
+    );
+  };
 
   // renderScreen에서 SplashScreen 분기 제거, 로그인하지 않으면 무조건 LoginScreen만 보이게
   const renderScreen = () => {
@@ -1288,7 +1833,13 @@ const StudyApp = () => {
       return <LoginScreen />;
     }
     if (activeScreen === 'chat') {
-      return <ChatRoomScreen chatRoomId={activeChat.chatRoomId} studyName={activeChat.studyName} imageUrl={activeChat.imageUrl} onBack={() => setActiveScreen('list')} userInfo={userInfo} />;
+      return <ChatRoomScreen chatRoomId={activeChat.chatRoomId} studyName={activeChat.studyName} imageUrl={activeChat.imageUrl} onBack={() => {
+        if (chatEntrySource === 'study') {
+          setActiveScreen('list');
+        } else {
+          setActiveScreen('chat-list');
+        }
+      }} userInfo={userInfo} />;
     }
     if (activeScreen === 'create') {
       return <StudyCreateScreen onCreated={() => setActiveScreen('list')} onCancel={() => setActiveScreen('list')} categoryList={categoryList} fetchStudyList={fetchStudyList} userInfo={userInfo} />;
@@ -1296,11 +1847,16 @@ const StudyApp = () => {
     if (activeScreen === 'chat-list') {
       return <ChatListScreen />;
     }
+    if (activeScreen === 'community') {
+      return <CommunityScreen />;
+    }
     switch (activeTab) {
       case 'dashboard':
         return <DashboardScreen />;
       case 'study-list':
         return <StudyListScreen />;
+      case 'community':
+        return <CommunityScreen />;
       case 'more':
         return <MoreScreen />;
       default:
@@ -1377,52 +1933,56 @@ const StudyApp = () => {
     }
   };
 
-  // 이미지 전송 함수
+  // 이미지 전송 함수 (ChatRoomScreen 내부)
   const pickAndSendImage = async () => {
-    alert('pickAndSendImage 실행');
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    alert('권한 요청 결과: ' + status);
-    if (status !== 'granted') {
-      alert('이미지 접근 권한이 필요합니다.');
-      return;
-    }
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 0.5,
-    });
-    alert('이미지 선택 결과: ' + JSON.stringify(result));
-    if (!result.canceled && result.assets && result.assets[0].uri) {
-      alert('이미지 선택됨: ' + result.assets[0].uri);
-      // 이미지 업로드 (FormData)
-      const formData = new FormData();
-      formData.append('file', {
-        uri: result.assets[0].uri,
-        name: 'chat_image.jpg',
-        type: 'image/jpeg',
-      });
-      try {
-        const res = await axios.post(`${BASE_URL}/api/study/upload-image`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
-        const imageUrl = res.data.url;
-        alert('이미지 업로드 성공: ' + imageUrl);
-        // 채팅 메시지 전송 (JSON, headers 없이!)
-        await axios.post(`${BASE_URL}/api/chat/send`, {
-          chatRoomId: chatRoomId,
-          userId: userInfo.id,
-          sender: userInfo.name,
-          content: '',
-          imageUrl,
-        });
-        alert('이미지 메시지 전송 성공');
-        await fetchMessages();
-      } catch (e) {
-        alert('이미지 전송 실패: ' + (e.response?.data?.message || e.message));
+    try {
+      Alert.alert('이미지 전송', '이미지 전송 버튼이 눌렸습니다.');
+      if (!chatRoomId) {
+        Alert.alert('오류', '채팅방 ID가 없습니다. 방 목록에서 다시 입장해 주세요.');
+        return;
       }
-    } else {
-      alert('이미지 선택이 취소되었거나 실패했습니다.');
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('오류', '이미지 접근 권한이 필요합니다.');
+        return;
+      }
+      let result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.5,
+      });
+      if (!result.canceled && result.assets && result.assets[0].uri) {
+        Alert.alert('이미지 선택됨', result.assets[0].uri);
+        const formData = new FormData();
+        formData.append('file', {
+          uri: result.assets[0].uri,
+          name: 'chat_image.jpg',
+          type: 'image/jpeg',
+        });
+        try {
+          const res = await axios.post(`${BASE_URL}/api/study/upload-image`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          });
+          const imageUrl = res.data.url;
+          Alert.alert('업로드 성공', imageUrl);
+          await axios.post(`${BASE_URL}/api/chat/send`, {
+            chatRoomId: chatRoomId,
+            userId: userInfo.id,
+            sender: userInfo.name,
+            content: '',
+            imageUrl,
+          });
+          Alert.alert('이미지 메시지 전송 성공');
+          await fetchMessages();
+        } catch (e) {
+          Alert.alert('이미지 전송 실패', e.response?.data?.message || e.message);
+        }
+      } else {
+        Alert.alert('이미지 선택이 취소되었거나 실패했습니다.');
+      }
+    } catch (err) {
+      Alert.alert('예상치 못한 오류', err.message);
     }
   };
 
@@ -1460,8 +2020,33 @@ const StudyApp = () => {
     setShowMenuDrawer(true);
     setParticipantsLoading(true);
     try {
-      const res = await axios.get(`${BASE_URL}/api/study/${chatRoomId}/users`);
-      setParticipants(Array.isArray(res.data) ? res.data : []);
+      let studyRoomId = activeChat.studyRoomId || activeChat.id;
+      // studyRoomId가 없으면 chatId로 조회
+      if (!studyRoomId && activeChat.chatRoomId) {
+        try {
+          const studyRes = await axios.get(`${BASE_URL}/api/study/chat/${activeChat.chatRoomId}`);
+          studyRoomId = studyRes.data.id;
+        } catch {}
+      }
+      if (!studyRoomId) {
+        setParticipants([]);
+        setParticipantsLoading(false);
+        return;
+      }
+      const res = await axios.get(`${BASE_URL}/api/study/${studyRoomId}/users`);
+      const participantsRaw = Array.isArray(res.data) ? res.data : [];
+      // userId로 이름 병합
+      const participantsWithName = await Promise.all(
+        participantsRaw.map(async (p) => {
+          let name = '';
+          try {
+            const userRes = await axios.get(`${BASE_URL}/api/user/${p.userId}`);
+            name = userRes.data.name || '';
+          } catch {}
+          return { ...p, name };
+        })
+      );
+      setParticipants(participantsWithName);
     } catch {
       setParticipants([]);
     }
@@ -1511,7 +2096,7 @@ const StudyApp = () => {
       <View style={styles.modalOverlay}>
         <View style={[styles.centerModalContent, { maxHeight: 500, width: '90%' }]}> 
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>참여중인 채팅방</Text>
+            <Text style={styles.modalTitle}>채팅</Text>
             <TouchableOpacity 
               style={styles.closeButtonContainer}
               onPress={() => setShowChatListModal(false)}
@@ -1532,9 +2117,13 @@ const StudyApp = () => {
                     key={study.chatId}
                     style={styles.studyListItem}
                     onPress={() => {
+                      if (!study.chatId) {
+                        Alert.alert('채팅방 진입 불가', '이 방에는 chatId가 없습니다.\n' + JSON.stringify(study, null, 2));
+                        return;
+                      }
+                      setChatEntrySource('chat-list');
                       setActiveScreen('chat');
                       setActiveChat({ chatRoomId: study.chatId, studyName: study.name, imageUrl: study.imageUrl });
-                      setShowChatListModal(false);
                     }}
                   >
                     <View style={styles.studyItemContent}>
@@ -1568,7 +2157,7 @@ const StudyApp = () => {
   // 카테고리 필터 바 컴포넌트
   const CategoryFilterBar = ({ categoryList, selectedCategory, onSelectCategory }) => (
     <View style={{ backgroundColor: '#fff', paddingVertical: 4 }}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 12, marginBottom: 8 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 0, marginBottom: 8 }}>
         <TouchableOpacity
           style={[styles.categoryButton, selectedCategory === 'all' && styles.categoryButtonSelected]}
           onPress={() => onSelectCategory('all')}
@@ -1600,6 +2189,8 @@ const StudyApp = () => {
     });
     const [imageUri, setImageUri] = useState('');
     const [uploading, setUploading] = useState(false);
+    // 카테고리 선택 모달 상태 추가
+    const [showCategoryPicker, setShowCategoryPicker] = useState(false);
     const pickImage = async () => {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
@@ -1652,6 +2243,10 @@ const StudyApp = () => {
         alert('대표 이미지는 필수입니다.');
         return;
       }
+      if (!localForm.description.trim()) {
+        alert('방 소개를 입력해주세요.');
+        return;
+      }
       const newRoom = {
         name: localForm.name,
         studyRoomHostId: userInfo?.id,
@@ -1670,6 +2265,17 @@ const StudyApp = () => {
         alert('스터디룸 생성 실패: ' + (err.response?.data?.message || err.message));
       }
     };
+    // 필수 입력값 체크 함수 (컴포넌트 내부로 이동)
+    const isFormValid = () => {
+      return (
+        localForm.name.trim() &&
+        localForm.category &&
+        localForm.peopleCount &&
+        localForm.imageUrl &&
+        localForm.description.trim() &&
+        !uploading
+      );
+    };
     return (
       <KeyboardAvoidingView
         style={{ flex: 1, backgroundColor: '#fff' }}
@@ -1677,18 +2283,25 @@ const StudyApp = () => {
         keyboardVerticalOffset={60}
       >
         <SafeAreaView style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderColor: '#eee' }}>
-            <TouchableOpacity onPress={onCancel} style={{ padding: 6, marginRight: 8 }}>
-              <Ionicons name="arrow-back" size={28} color="#222" />
+          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, justifyContent: 'center', position: 'relative' }}>
+            <TouchableOpacity onPress={onCancel} style={{ position: 'absolute', left: 20 }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="close" size={28} color="#222" />
             </TouchableOpacity>
-            <Text style={{ fontSize: 18, fontWeight: 'bold' }}>스터디 만들기</Text>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', textAlign: 'center', flex: 1 }}>스터디 만들기</Text>
+            <TouchableOpacity
+              onPress={handleCreate}
+              disabled={!isFormValid()}
+              style={{ position: 'absolute', right: 8, padding: 6, opacity: isFormValid() ? 1 : 0.4 }}
+            >
+              <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#222' }}>생성</Text>
+            </TouchableOpacity>
           </View>
           <ScrollView style={{ flex: 1, padding: 20 }}>
             <View style={styles.formGroup}>
-              <Text style={styles.createFormLabel}>대표 이미지 (필수)</Text>
-              <TouchableOpacity onPress={pickImage} style={{ ...styles.createFormInput, alignItems: 'center', justifyContent: 'center', height: 120 }}>
+              {/* <Text style={styles.createFormLabel}>대표 이미지 (필수)</Text> */}
+              <TouchableOpacity onPress={pickImage} style={{ ...styles.createFormInput, alignItems: 'center', justifyContent: 'center', height: 140, width: 140, alignSelf: 'center' }}>
                 {localForm.imageUrl ? (
-                  <Image source={{ uri: localForm.imageUrl }} style={{ width: 100, height: 100, borderRadius: 10 }} />
+                  <Image source={{ uri: localForm.imageUrl }} style={{ width: 140, height: 140, borderRadius: 16 }} />
                 ) : (
                   <Text style={{ color: '#888' }}>이미지 선택</Text>
                 )}
@@ -1696,20 +2309,18 @@ const StudyApp = () => {
               {uploading && <Text style={{ color: '#4CAF50', marginTop: 4 }}>업로드 중...</Text>}
             </View>
             <View style={styles.formGroup}>
-              <Text style={styles.createFormLabel}>스터디명</Text>
               <TextInput
                 style={styles.createFormInput}
-                placeholder="스터디 이름을 입력하세요"
+                placeholder="스터디 이름 (필수)"
                 value={localForm.name}
                 onChangeText={(text) => setLocalForm({...localForm, name: text})}
                 placeholderTextColor="#999"
               />
             </View>
             <View style={styles.formGroup}>
-              <Text style={styles.createFormLabel}>방 소개</Text>
               <TextInput
                 style={[styles.createFormInput, styles.createTextArea]}
-                placeholder="방 소개를 입력하세요"
+                placeholder="방 소개를 입력하세요 (필수)"
                 value={localForm.description}
                 onChangeText={(text) => setLocalForm({...localForm, description: text})}
                 multiline
@@ -1723,7 +2334,7 @@ const StudyApp = () => {
                 <Text style={styles.createFormLabel}>카테고리</Text>
                 <TouchableOpacity
                   style={styles.categorySelector}
-                  onPress={() => {}}
+                  onPress={() => setShowCategoryPicker(true)}
                 >
                   <Text style={styles.categoryText}>
                     {categoryList.find(cat => cat.id === localForm.category)?.name || '카테고리 선택'}
@@ -1761,13 +2372,7 @@ const StudyApp = () => {
             </View>
           </ScrollView>
           <View style={styles.createModalFooter}>
-            <TouchableOpacity
-              style={[styles.createSubmitButton, (!localForm.imageUrl || uploading) && { backgroundColor: '#ccc' }]}
-              onPress={handleCreate}
-              disabled={!localForm.imageUrl || uploading}
-            >
-              <Text style={styles.createSubmitButtonText}>스터디 생성하기</Text>
-            </TouchableOpacity>
+           
           </View>
         </SafeAreaView>
       </KeyboardAvoidingView>
@@ -1820,16 +2425,24 @@ const StudyApp = () => {
           // 참여중인 스터디방 목록에서 채팅방 정보와 마지막 메시지 가져오기
           const res = await axios.get(`${BASE_URL}/api/study/${userInfo.id}/rooms`);
           const rooms = Array.isArray(res.data) ? res.data : [];
-          // 각 채팅방의 마지막 메시지 fetch
+          // 각 채팅방의 마지막 메시지 fetch 및 id 보완
           const roomsWithLastMsg = await Promise.all(
             rooms.filter(r => r.chatId).map(async (room) => {
               let lastMsg = null;
+              let studyRoomId = room.id;
               try {
                 const msgRes = await axios.get(`${BASE_URL}/api/chat/rooms/${room.chatId}/all`);
                 const msgs = Array.isArray(msgRes.data) ? msgRes.data : [];
                 lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
               } catch {}
-              return { ...room, lastMsg };
+              // id가 없으면 chatId로 스터디방 id 조회
+              if (!studyRoomId && room.chatId) {
+                try {
+                  const studyRes = await axios.get(`${BASE_URL}/api/study/chat/${room.chatId}`);
+                  studyRoomId = studyRes.data.id;
+                } catch {}
+              }
+              return { ...room, lastMsg, id: studyRoomId };
             })
           );
           // 최신 메시지 순 정렬
@@ -1845,10 +2458,48 @@ const StudyApp = () => {
       };
       fetchChatRooms();
     }, [userInfo]);
+
+    // 방 나가기 함수 (채팅 리스트용)
+    const leaveRoomFromList = (room) => {
+      if (!room.id) {
+        alert('스터디방 id가 없습니다. 방 나가기 기능이 동작하지 않습니다.');
+        return;
+      }
+      Alert.alert(
+        '방 나가기',
+        '정말로 이 방에서 퇴장하시겠습니까?',
+        [
+          { text: '취소', style: 'cancel' },
+          {
+            text: '확인',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await axios.delete(`${BASE_URL}/api/study/${room.id}/${userInfo.id}`);
+                setChatRooms(prev => prev.filter(r => r.chatId !== room.chatId));
+              } catch (err) {
+                alert('방 퇴장 실패: ' + (err.response?.data?.message || err.message));
+              }
+            }
+          }
+        ]
+      );
+    };
+
+    // Swipeable의 오른쪽 액션 렌더러
+    const renderRightActions = (room) => (
+      <TouchableOpacity
+        style={{ backgroundColor: '#FF5252', justifyContent: 'center', alignItems: 'center', width: 100, height: '100%' }}
+        onPress={() => leaveRoomFromList(room)}
+      >
+        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>방 나가기</Text>
+      </TouchableOpacity>
+    );
+
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderColor: '#eee' }}>
-          <Text style={{ fontSize: 18, fontWeight: 'bold' }}>참여중인 채팅방</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}>
+          <Text style={{ fontSize: 25, fontWeight: '600' }}>채팅</Text>
         </View>
         {loading ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><Text>로딩 중...</Text></View>
@@ -1860,33 +2511,43 @@ const StudyApp = () => {
               </View>
             ) : (
               chatRooms.map(room => (
-                <TouchableOpacity
+                <Swipeable
                   key={room.chatId}
-                  style={{ flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderColor: '#f0f0f0' }}
-                  onPress={() => {
-                    setActiveScreen('chat');
-                    setActiveChat({ chatRoomId: room.chatId, studyName: room.name, imageUrl: room.imageUrl });
-                  }}
+                  renderRightActions={() => renderRightActions(room)}
+                  overshootRight={false}
                 >
-                  {room.imageUrl ? (
-                    <Image source={{ uri: room.imageUrl }} style={{ width: 48, height: 48, borderRadius: 10, marginRight: 14 }} />
-                  ) : (
-                    <View style={{ width: 48, height: 48, borderRadius: 10, marginRight: 14, backgroundColor: '#eee', alignItems: 'center', justifyContent: 'center' }}>
-                      <Text style={{ color: '#aaa', fontSize: 18 }}>📷</Text>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderColor: '#f0f0f0', backgroundColor: '#fff' }}
+                    onPress={() => {
+                      if (!room.chatId) {
+                        Alert.alert('채팅방 진입 불가', '이 방에는 chatId가 없습니다.\n' + JSON.stringify(room, null, 2));
+                        return;
+                      }
+                      setChatEntrySource('chat-list');
+                      setActiveScreen('chat');
+                      setActiveChat({ chatRoomId: room.chatId, studyName: room.name, imageUrl: room.imageUrl });
+                    }}
+                  >
+                    {room.imageUrl ? (
+                      <Image source={{ uri: room.imageUrl }} style={{ width: 48, height: 48, borderRadius: 10, marginRight: 14 }} />
+                    ) : (
+                      <View style={{ width: 48, height: 48, borderRadius: 10, marginRight: 14, backgroundColor: '#eee', alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ color: '#aaa', fontSize: 18 }}>📷</Text>
+                      </View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#222' }} numberOfLines={1}>{room.name}</Text>
+                      <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }} numberOfLines={1} ellipsizeMode="tail">
+                        {room.lastMsg?.content ? room.lastMsg.content : '메시지가 없습니다'}
+                      </Text>
                     </View>
-                  )}
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#222' }} numberOfLines={1}>{room.name}</Text>
-                    <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }} numberOfLines={1} ellipsizeMode="tail">
-                      {room.lastMsg?.content ? room.lastMsg.content : '메시지가 없습니다'}
-                    </Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end', marginLeft: 10 }}>
-                    <Text style={{ fontSize: 11, color: '#aaa' }}>
-                      {room.lastMsg?.sentAt ? new Date(room.lastMsg.sentAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : ''}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
+                    <View style={{ alignItems: 'flex-end', marginLeft: 10 }}>
+                      <Text style={{ fontSize: 11, color: '#aaa' }}>
+                        {room.lastMsg?.sentAt ? new Date(room.lastMsg.sentAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : ''}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                </Swipeable>
               ))
             )}
           </ScrollView>
@@ -1895,219 +2556,333 @@ const StudyApp = () => {
     );
   };
 
+  // 1. 상단에 상태 추가
+  const [chatEntrySource, setChatEntrySource] = useState(''); // 'study' | 'chat-list'
+
+  // 1. 상단에 유틸 함수 추가
+  function getTimeAgo(dateString) {
+    if (!dateString) return '';
+    const now = new Date();
+    const date = new Date(dateString);
+    const diff = Math.floor((now - date) / 1000); // 초 단위
+    if (diff < 60) return `${diff}초 전 대화`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}분 전 대화`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전 대화`;
+    return `${Math.floor(diff / 86400)}일 전 대화`;
+  }
+
+  // 현재 채팅방의 studyRoomHostId를 구하는 함수
+  const getCurrentRoomHostId = () => {
+    const room = Array.isArray(studyList) ? studyList.find(r => r.chatId === activeChat.chatRoomId) : null;
+    return room ? room.studyRoomHostId : null;
+  };
+  const isHost = userInfo && getCurrentRoomHostId() === userInfo.id;
+
+  const increasePostViews = async (postId) => {
+    try {
+      await axios.patch(`${BASE_URL}/api/community/${postId}/views`);
+    } catch {}
+  };
+
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-      
-      <View style={styles.content}>
-        {renderScreen()}
-      </View>
-      {/* 채팅방이 아닐 때만 탭바 표시 */}
-      {userInfo && activeScreen !== 'chat' && (
-        <View style={styles.tabBar}>
-          <TouchableOpacity
-            style={[styles.tabButton, activeTab === 'dashboard' && styles.activeTabButton]}
-            onPress={() => { setActiveTab('dashboard'); setActiveScreen('dashboard'); }}
-          >
-            <Text style={styles.tabIcon}>≡</Text>
-            <Text style={[styles.tabButtonText, activeTab === 'dashboard' && styles.activeTabButtonText]}>대시보드</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tabButton, { flex: 1 }, activeTab === 'study-list' && styles.activeTabButton]}
-            onPress={() => { setActiveTab('study-list'); setActiveScreen('list'); }}
-          >
-            <Ionicons name="book-outline" size={22} color="#222" style={[styles.tabIcon, { marginTop: 4 }]} />
-            <Text style={[styles.tabButtonText, activeTab === 'study-list' && styles.activeTabButtonText]}>스터디룸</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tabButton, { flex: 1 }, activeTab === 'chat-list' && styles.activeTabButton]}
-            onPress={() => { setActiveTab('chat-list'); setActiveScreen('chat-list'); }}
-          >
-            <Ionicons name="chatbubble-ellipses-outline" size={22} color={activeTab === 'chat-list' ? '#4CAF50' : '#222'} style={[styles.tabIcon, { marginTop: 4 }]} />
-            <Text style={[styles.tabButtonText, activeTab === 'chat-list' && styles.activeTabButtonText]}>채팅</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tabButton, { flex: 1 }, activeTab === 'more' && styles.activeTabButton]}
-            onPress={() => { setActiveTab('more'); setActiveScreen('more'); }}
-          >
-            <Text style={[styles.tabIcon, { marginTop: 4 }]}>⋯</Text>
-            <Text style={[styles.tabButtonText, activeTab === 'more' && styles.activeTabButtonText]}>더보기</Text>
-          </TouchableOpacity>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+        <View style={styles.content}>
+          {renderScreen()}
         </View>
-      )}
-      <SearchModal />
-      <Modal
-        transparent={true}
-        visible={showPicker}
-        onRequestClose={() => setShowPicker(false)}
-      >
-        <TouchableOpacity 
-          style={styles.pickerModalOverlay} 
-          activeOpacity={1} 
-          onPress={() => setShowPicker(false)}
-        >
-          <View style={styles.pickerContainer}>
-            <View style={styles.pickerHeader}>
-              <TouchableOpacity onPress={() => setShowPicker(false)}>
-                <Text style={styles.pickerDoneButton}>완료</Text>
-              </TouchableOpacity>
-            </View>
-            <Picker
-              selectedValue={studyFormRef.current.category}
-              onValueChange={(value) => {
-                const newForm = {...studyFormRef.current, category: value};
-                studyFormRef.current = newForm;
-                setShowPicker(false);
-              }}
-              style={styles.picker}
-            >
-              <Picker.Item label="카테고리 선택" value="" />
-              <Picker.Item label="📚 프로그래밍 / 개발" value="programming" />
-              <Picker.Item label="🎨 디자인" value="design" />
-              <Picker.Item label="🌏 외국어" value="language" />
-              <Picker.Item label="💼 취업 / 이직" value="job" />
-              <Picker.Item label="📊 데이터 사이언스" value="data_science" />
-              <Picker.Item label="📱 모바일 앱 개발" value="mobile_dev" />
-              <Picker.Item label="🎮 게임 개발" value="game_dev" />
-              <Picker.Item label="🔒 보안 / 네트워크" value="security" />
-              <Picker.Item label="☁️ 클라우드 / DevOps" value="devops" />
-              <Picker.Item label="🤖 AI / 머신러닝" value="ai_ml" />
-              <Picker.Item label="🎥 영상 편집" value="video_editing" />
-              <Picker.Item label="🎵 음악 / 작곡" value="music" />
-              <Picker.Item label="📝 블로그 / 글쓰기" value="writing" />
-              <Picker.Item label="📈 주식 / 투자" value="investment" />
-              <Picker.Item label="📚 독서" value="reading" />
-              <Picker.Item label="✏️ 자격증" value="certification" />
-              <Picker.Item label="📋 면접 준비" value="interview" />
-              <Picker.Item label="📖 어학시험" value="language_test" />
-              <Picker.Item label="🎯 코딩테스트" value="coding_test" />
-              <Picker.Item label="🌐 웹 개발" value="web_dev" />
-            </Picker>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-      {showMenuDrawer && (
-        <>
-          <TouchableOpacity
-            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.3)', zIndex: 10 }}
-            activeOpacity={1}
-            onPress={closeMenuDrawer}
-          />
-          <Animated.View
-            style={{
-              position: 'absolute',
-              top: 0,
-              right: 0,
-              width: Dimensions.get('window').width * 0.75,
-              height: '100%',
-              backgroundColor: '#fff',
-              zIndex: 20,
-              padding: 24,
-              shadowColor: '#000',
-              shadowOffset: { width: -2, height: 0 },
-              shadowOpacity: 0.15,
-              shadowRadius: 8,
-              elevation: 8,
-              transform: [{ translateX: menuAnim }],
-            }}
-          >
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
-              <Text style={{ fontSize: 18, fontWeight: 'bold' }}>채팅방 정보</Text>
-              <TouchableOpacity onPress={closeMenuDrawer}>
-                <Ionicons name="close" size={28} color="#888" />
-              </TouchableOpacity>
-            </View>
-            <Text style={{ fontSize: 15, fontWeight: '500', marginBottom: 10 }}>참여자</Text>
-            <ScrollView style={{ maxHeight: 220 }}>
-              {participantsLoading ? (
-                <Text style={{ color: '#888', textAlign: 'center', marginTop: 20 }}>로딩 중...</Text>
-              ) : (
-                participants.map((user) => (
-                  <View key={user.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-                    <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#eee', alignItems: 'center', justifyContent: 'center', marginRight: 12 }}>
-                      <Text style={{ fontSize: 18, color: '#888' }}>👤</Text>
-                    </View>
-                    <Text style={{ fontSize: 16, color: '#222', fontWeight: '500' }}>{user.name}</Text>
-                  </View>
-                ))
-              )}
-            </ScrollView>
+        {/* 채팅방이 아닐 때만 탭바 표시 */}
+        {userInfo && activeScreen !== 'chat' && (
+          <View style={styles.tabBar}>
             <TouchableOpacity
-              style={{
-                marginTop: 32,
-                backgroundColor: '#FF5252',
-                borderRadius: 12,
-                paddingVertical: 14,
-                alignItems: 'center',
-              }}
-              onPress={handleLeaveRoom}
+              style={[styles.tabButton, activeTab === 'dashboard' && styles.activeTabButton]}
+              onPress={() => { setActiveTab('dashboard'); setActiveScreen('dashboard'); }}
             >
-              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>방 퇴장</Text>
+              <Text style={styles.tabIcon}>≡</Text>
+              <Text style={[styles.tabButtonText, activeTab === 'dashboard' && styles.activeTabButtonText]}>대시보드</Text>
             </TouchableOpacity>
-          </Animated.View>
-        </>
-      )}
-      <ChatListModal />
-      <Modal
-        transparent
-        visible={joinModal.visible}
-        animationType="fade"
-        onRequestClose={() => setJoinModal({ visible: false, study: null, password: '' })}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.centerModalContent, { width: '85%', maxWidth: 350, padding: 24 }]}> 
-            <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' }}>방에 참여하시겠습니까?</Text>
-            {/* 썸네일 */}
-            {joinModal.study?.imageUrl ? (
-              <Image source={{ uri: joinModal.study.imageUrl }} style={{ width: 60, height: 60, borderRadius: 12, alignSelf: 'center', marginBottom: 12 }} />
-            ) : null}
-            {/* 제목 */}
-            <Text style={{ fontSize: 17, fontWeight: 'bold', color: '#222', textAlign: 'center', marginBottom: 6 }} numberOfLines={1} ellipsizeMode="tail">
-              {joinModal.study?.name ?? ''}
-            </Text>
-            {/* 소개 */}
-            {joinModal.study?.description ? (
-              <Text style={{ fontSize: 14, color: '#666', marginBottom: 10, textAlign: 'center' }} numberOfLines={2} ellipsizeMode="tail">
-                {joinModal.study.description}
-              </Text>
-            ) : null}
-            {/* 인원수, 방장명 */}
-            <Text style={{ fontSize: 13, color: '#888', textAlign: 'center', marginBottom: 14 }}>
-              인원수: {participantCounts[joinModal.study?.id] ?? '-'} / {joinModal.study?.peopleCount ?? '-'}명  |  방장: {joinModal.study?.hostName ?? '-'}
-            </Text>
-            {joinModal.study?.password ? (
-              <View style={{ marginBottom: 16 }}>
-                <Text style={{ fontSize: 14, color: '#666', marginBottom: 6 }}>비밀번호</Text>
-                <TextInput
-                  style={[styles.createFormInput, { marginBottom: 0 }]}
-                  placeholder="비밀번호를 입력하세요"
-                  value={joinModal.password}
-                  onChangeText={pw => setJoinModal(j => ({ ...j, password: pw }))}
-                  secureTextEntry
-                  placeholderTextColor="#999"
-                />
+            <TouchableOpacity
+              style={[styles.tabButton, { flex: 1 }, activeTab === 'study-list' && styles.activeTabButton]}
+              onPress={() => { setActiveTab('study-list'); setActiveScreen('list'); }}
+            >
+              <Ionicons name="book-outline" size={22} color="#222" style={[styles.tabIcon, { marginTop: 4 }]} />
+              <Text style={[styles.tabButtonText, activeTab === 'study-list' && styles.activeTabButtonText]}>스터디룸</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tabButton, { flex: 1 }, activeTab === 'community' && styles.activeTabButton]}
+              onPress={() => { setActiveTab('community'); setActiveScreen('community'); }}
+            >
+              <Ionicons name="people-outline" size={22} color="#222" style={[styles.tabIcon, { marginTop: 4 }]} />
+              <Text style={[styles.tabButtonText, activeTab === 'community' && styles.activeTabButtonText]}>커뮤니티</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tabButton, { flex: 1 }, activeTab === 'chat-list' && styles.activeTabButton]}
+              onPress={() => { setActiveTab('chat-list'); setActiveScreen('chat-list'); }}
+            >
+              <Ionicons name="chatbubble-ellipses-outline" size={22} color="#222" style={[styles.tabIcon, { marginTop: 4 }]} />
+              <Text style={[styles.tabButtonText, activeTab === 'chat-list' && styles.activeTabButtonText]}>채팅</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tabButton, { flex: 1 }, activeTab === 'more' && styles.activeTabButton]}
+              onPress={() => { setActiveTab('more'); setActiveScreen('more'); }}
+            >
+              <Text style={[styles.tabIcon, { marginTop: 4 }]}>⋯</Text>
+              <Text style={[styles.tabButtonText, activeTab === 'more' && styles.activeTabButtonText]}>더보기</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        <SearchModal />
+        <Modal
+          transparent={true}
+          visible={showPicker}
+          onRequestClose={() => setShowPicker(false)}
+        >
+          <TouchableOpacity 
+            style={styles.pickerModalOverlay} 
+            activeOpacity={1} 
+            onPress={() => setShowPicker(false)}
+          >
+            <View style={styles.pickerContainer}>
+              <View style={styles.pickerHeader}>
+                <TouchableOpacity onPress={() => setShowPicker(false)}>
+                  <Text style={styles.pickerDoneButton}>완료</Text>
+                </TouchableOpacity>
               </View>
-            ) : null}
-            <View style={{ flexDirection: 'row', marginTop: 32 }}>
-              <TouchableOpacity
-                style={[styles.createSubmitButton, { backgroundColor: '#ccc', flex: 1, marginHorizontal: 4 }]}
-                onPress={() => setJoinModal({ visible: false, study: null, password: '' })}
-                disabled={joinLoading}
+              <Picker
+                selectedValue={studyFormRef.current.category}
+                onValueChange={(value) => {
+                  const newForm = {...studyFormRef.current, category: value};
+                  studyFormRef.current = newForm;
+                  setShowPicker(false);
+                }}
+                style={styles.picker}
               >
-                <Text style={styles.createSubmitButtonText}>취소</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.createSubmitButton, joinLoading && { backgroundColor: '#ccc' }, { flex: 1, marginHorizontal: 4 }]}
-                onPress={handleJoinRoom}
-                disabled={joinLoading}
-              >
-                <Text style={styles.createSubmitButtonText}>{joinLoading ? '참여 중...' : '참여'}</Text>
-              </TouchableOpacity>
+                <Picker.Item label="카테고리 선택" value="" />
+                <Picker.Item label="📚 프로그래밍 / 개발" value="programming" />
+                <Picker.Item label="🎨 디자인" value="design" />
+                <Picker.Item label="🌏 외국어" value="language" />
+                <Picker.Item label="💼 취업 / 이직" value="job" />
+                <Picker.Item label="📊 데이터 사이언스" value="data_science" />
+                <Picker.Item label="📱 모바일 앱 개발" value="mobile_dev" />
+                <Picker.Item label="🎮 게임 개발" value="game_dev" />
+                <Picker.Item label="🔒 보안 / 네트워크" value="security" />
+                <Picker.Item label="☁️ 클라우드 / DevOps" value="devops" />
+                <Picker.Item label="🤖 AI / 머신러닝" value="ai_ml" />
+                <Picker.Item label="🎥 영상 편집" value="video_editing" />
+                <Picker.Item label="🎵 음악 / 작곡" value="music" />
+                <Picker.Item label="📝 블로그 / 글쓰기" value="writing" />
+                <Picker.Item label="📈 주식 / 투자" value="investment" />
+                <Picker.Item label="📚 독서" value="reading" />
+                <Picker.Item label="✏️ 자격증" value="certification" />
+                <Picker.Item label="📋 면접 준비" value="interview" />
+                <Picker.Item label="📖 어학시험" value="language_test" />
+                <Picker.Item label="🎯 코딩테스트" value="coding_test" />
+                <Picker.Item label="🌐 웹 개발" value="web_dev" />
+              </Picker>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+        {showMenuDrawer && (
+          <>
+            <TouchableOpacity
+              style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.3)', zIndex: 10 }}
+              activeOpacity={1}
+              onPress={closeMenuDrawer}
+            />
+            <Animated.View
+              style={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: Dimensions.get('window').width * 0.75,
+                height: '100%',
+                backgroundColor: '#fff',
+                zIndex: 20,
+                padding: 0,
+                shadowColor: '#000',
+                shadowOffset: { width: -2, height: 0 },
+                shadowOpacity: 0.15,
+                shadowRadius: 8,
+                elevation: 8,
+                transform: [{ translateX: menuAnim }],
+              }}
+            >
+              {/* 상단: 채팅방 썸네일, 제목, 대화상태 */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', padding: 24 }}>
+                {activeChat.imageUrl ? (
+                  <Image source={{ uri: activeChat.imageUrl }} style={{ width: 56, height: 56, borderRadius: 16, marginRight: 16, backgroundColor: '#eee' }} />
+                ) : (
+                  <View style={{ width: 56, height: 56, borderRadius: 16, marginRight: 16, backgroundColor: '#eee', alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 28, color: '#bbb' }}>📷</Text>
+                  </View>
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#222' }} numberOfLines={1}>{activeChat.studyName}</Text>
+                </View>
+                <TouchableOpacity onPress={closeMenuDrawer} style={{ marginLeft: 8, padding: 4 }}>
+                  <Ionicons name="close" size={28} color="#888" />
+                </TouchableOpacity>
+              </View>
+              {/* 참여자 리스트 (2열 그리드) */}
+              <View style={{
+                borderWidth: 1,
+                borderColor: '#eee',
+                borderRadius: 14,
+                backgroundColor: '#fff',
+                overflow: 'hidden',
+                paddingHorizontal: 0,
+                marginHorizontal: 24,
+                marginBottom: 18,
+                paddingTop: 10,
+                paddingBottom: 10,
+                maxHeight: 220,
+              }}>
+                <Text style={{ fontSize: 15, fontWeight: '500', marginBottom: 10, color: '#222', marginLeft: 18 }}>대화상대</Text>
+                {participantsLoading ? (
+                  <View style={{ alignItems: 'center', justifyContent: 'center', height: 60 }}><Text>로딩 중...</Text></View>
+                ) : participants.length === 0 ? (
+                  <View style={{ alignItems: 'center', justifyContent: 'center', height: 60 }}><Text>참여자가 없습니다</Text></View>
+                ) : (
+                  <FlatList
+                    data={participants}
+                    keyExtractor={item => String(item.userId)}
+                    numColumns={1}
+                    contentContainerStyle={{ paddingHorizontal: 10, paddingBottom: 6 }}
+                    renderItem={({ item }) => (
+                      <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', marginVertical: 6, marginHorizontal: 8, padding: 12, borderRadius: 10 }}>
+                        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#eee', alignItems: 'center', justifyContent: 'center' }}>
+                          <Ionicons name="person" size={22} color="#bbb" />
+                        </View>
+                        <Text style={{ fontSize: 13, color: '#222', marginLeft: 14 }}>{item.name}</Text>
+                        {/* 방장 외 인원만 내보내기 버튼 (방장만 보임, 본인은 안 보임) */}
+                        {isHost && item.userId !== userInfo.id && item.userId !== getCurrentRoomHostId() && (
+                          <TouchableOpacity
+                            onPress={async () => {
+                              try {
+                                await axios.delete(`${BASE_URL}/api/study/${activeChat.studyRoomId || activeChat.id}/${item.userId}`);
+                                // 퇴출 후 참여자 목록 새로고침
+                                openMenuDrawer();
+                              } catch (err) {
+                                alert('내보내기 실패: ' + (err.response?.data?.message || err.message));
+                              }
+                            }}
+                            style={{ marginLeft: 10 }}
+                          >
+                            <Text style={{ color: '#FF5252', fontSize: 13 }}>내보내기</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    )}
+                    showsVerticalScrollIndicator={false}
+                  />
+                )}
+              </View>
+              {/* 일정/방 퇴장 버튼 그룹 */}
+              <View style={{
+                position: 'absolute',
+                left: 24,
+                right: 24,
+                bottom: 24,
+                borderWidth: 1,
+                borderColor: '#eee',
+                borderRadius: 14,
+                backgroundColor: '#fff',
+                overflow: 'hidden',
+              }}>
+                {isHost && (
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: 'transparent',
+                      borderWidth: 0,
+                      borderRadius: 0,
+                      alignItems: 'center',
+                      paddingVertical: 16,
+                      borderBottomWidth: 1,
+                      borderBottomColor: '#eee',
+                    }}
+                    onPress={() => setShowMeetingModal(true)}
+                  >
+                    <Text style={{ color: '#222', fontWeight: 'normal', fontSize: 15 }}>일정 생성</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: 'transparent',
+                    borderWidth: 0,
+                    borderRadius: 0,
+                    alignItems: 'center',
+                    paddingVertical: 16,
+                  }}
+                  onPress={handleLeaveRoom}
+                >
+                  <Text style={{ color: '#FF5252', fontWeight: 'normal', fontSize: 16 }}>채팅방 나가기</Text>
+                </TouchableOpacity>
+              </View>
+            </Animated.View>
+          </>
+        )}
+        <ChatListModal />
+        <Modal
+          transparent
+          visible={joinModal.visible}
+          animationType="fade"
+          onRequestClose={() => setJoinModal({ visible: false, study: null, password: '' })}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.centerModalContent, { width: '85%', maxWidth: 350, padding: 24 }]}> 
+              <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' }}>방에 참여하시겠습니까?</Text>
+              {/* 썸네일 */}
+              {joinModal.study?.imageUrl ? (
+                <Image source={{ uri: joinModal.study.imageUrl }} style={{ width: 60, height: 60, borderRadius: 12, alignSelf: 'center', marginBottom: 12 }} />
+              ) : null}
+              {/* 제목 */}
+              <Text style={{ fontSize: 17, fontWeight: 'bold', color: '#222', textAlign: 'center', marginBottom: 6 }} numberOfLines={1} ellipsizeMode="tail">
+                {joinModal.study?.name ?? ''}
+              </Text>
+              {/* 소개 */}
+              {joinModal.study?.description ? (
+                <Text style={{ fontSize: 14, color: '#666', marginBottom: 10, textAlign: 'center' }} numberOfLines={2} ellipsizeMode="tail">
+                  {joinModal.study.description}
+                </Text>
+              ) : null}
+              {/* 인원수, 방장명 */}
+              <Text style={{ fontSize: 13, color: '#888', textAlign: 'center', marginBottom: 14 }}>
+                인원수: {participantCounts[joinModal.study?.id] ?? '-'} / {joinModal.study?.peopleCount ?? '-'}명  |  방장: {joinModal.study?.hostName ?? '-'}
+              </Text>
+              {joinModal.study?.password ? (
+                <View style={{ marginBottom: 16 }}>
+                  <Text style={{ fontSize: 14, color: '#666', marginBottom: 6 }}>비밀번호</Text>
+                  <TextInput
+                    style={[styles.createFormInput, { marginBottom: 0 }]}
+                    placeholder="비밀번호를 입력하세요"
+                    value={joinModal.password}
+                    onChangeText={pw => setJoinModal(j => ({ ...j, password: pw }))}
+                    secureTextEntry
+                    placeholderTextColor="#999"
+                  />
+                </View>
+              ) : null}
+              <View style={{ flexDirection: 'row', marginTop: 32 }}>
+                <TouchableOpacity
+                  style={[styles.createSubmitButton, { backgroundColor: '#ccc', flex: 1, marginHorizontal: 4 }]}
+                  onPress={() => setJoinModal({ visible: false, study: null, password: '' })}
+                  disabled={joinLoading}
+                >
+                  <Text style={styles.createSubmitButtonText}>취소</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.createSubmitButton, joinLoading && { backgroundColor: '#ccc' }, { flex: 1, marginHorizontal: 4 }]}
+                  onPress={handleJoinRoom}
+                  disabled={joinLoading}
+                >
+                  <Text style={styles.createSubmitButtonText}>{joinLoading ? '참여 중...' : '참여'}</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
-    </SafeAreaView>
+        </Modal>
+      </SafeAreaView>
+    </GestureHandlerRootView>
   );
 };
 
@@ -2302,10 +3077,10 @@ const styles = StyleSheet.create({
     color: '#333',
   },
   studyProgress: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#222',
-    // backgroundColor, padding, borderRadius 제거
+    fontSize: 13,
+    color: '#222', // 검은색으로 변경
+    fontWeight: '500',
+    marginLeft: 2,
   },
   studyInfo: {
     gap: 8,
@@ -2411,7 +3186,7 @@ const styles = StyleSheet.create({
     color: '#666',
   },
   activeTabButtonText: {
-    color: '#4CAF50',
+    color: '#222',
     fontWeight: 'bold',
   },
   dashboardContainer: {
@@ -2581,7 +3356,7 @@ const styles = StyleSheet.create({
     color: '#333',
   },
   searchButton: {
-    backgroundColor: '#4CAF50',
+    backgroundColor: '#000000',
     borderRadius: 12,
     paddingHorizontal: 24,
     justifyContent: 'center',
@@ -2653,10 +3428,10 @@ const styles = StyleSheet.create({
     color: '#333',
   },
   studyProgress: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#222',
-    // backgroundColor, padding, borderRadius 제거
+    fontSize: 13,
+    color: '#222', // 검은색으로 변경
+    fontWeight: '500',
+    marginLeft: 2,
   },
   studyInfo: {
     gap: 8,
@@ -3135,19 +3910,20 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   categoryButton: {
-    backgroundColor: '#F5F5F5',
-    borderRadius: 16,
-    paddingVertical: 8,
+    borderRadius: 20,
+    paddingVertical: 10,
     paddingHorizontal: 18,
     marginRight: 8,
-    // borderWidth, borderColor 제거
+    borderWidth: 1,
+    borderColor: '#222',
+    backgroundColor: 'transparent',
   },
   categoryButtonSelected: {
-    backgroundColor: '#4CAF50',
-    borderColor: '#388E3C',
+    backgroundColor: '#222',
+    borderColor: '#222',
   },
   categoryButtonText: {
-    color: '#666',
+    color: '#222',
     fontSize: 14,
     fontWeight: '500',
   },
@@ -3173,10 +3949,10 @@ const styles = StyleSheet.create({
     zIndex: 100,
   },
   hostNameText: {
-    fontSize: 11,
-    color: '#999',
-    marginTop: 6,
-    textAlign: 'right',
+    fontSize: 13,
+    color: '#222', // 검은색으로 변경
+    fontWeight: '500',
+    marginLeft: 6,
   },
   studyDescription: {
     fontSize: 13,
