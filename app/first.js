@@ -263,11 +263,9 @@ const StudyApp = () => {
     </Modal>
   );
 
-  // 출석체크, 방 참여, 방 퇴장 핸들러 제거
-
   // 출석 잔디(Grass) 컴포넌트
   const AttendanceGrass = ({ lastAttendanceDate, consecutiveAttendance }) => {
-    const [selected, setSelected] = React.useState(null); // {row, col, date}
+    const [selected, setSelected] = React.useState(null); 
     const scaleAnim = React.useRef(new Animated.Value(1)).current;
     const translateYAnim = React.useRef(new Animated.Value(0)).current;
     // 49일(7주) 기준, 오늘을 기준으로 연속 출석일만큼 잔디 표시
